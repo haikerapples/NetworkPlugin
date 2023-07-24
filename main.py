@@ -1,10 +1,11 @@
 import asyncio
 import json
-
+import time
 import openai
 import plugins
 import os
-
+import requests
+import io
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from channel.chat_message import ChatMessage
@@ -15,9 +16,10 @@ from channel.wechatmp.wechatmp_channel import WechatMPChannel
 from config import conf
 from plugins import *
 from common.log import logger
-from plugins.newgpt_turbo.lib import function as fun, get_stock_info as stock, search_google as google
+from plugins.NetworkPlugin.lib import function as fun, get_stock_info as stock, search_google as google
 from datetime import datetime
 from bridge.bridge import Bridge
+from lib import itchat
 
 
 def create_channel_object():
@@ -36,27 +38,36 @@ def create_channel_object():
         return WechatChannel()
 
 
-@plugins.register(name="NewGpt_Turbo", desc="GPT函数调用，极速联网", desire_priority=99, version="0.1",
-                  author="chazzjimel", )
-class NewGpt(Plugin):
+@plugins.register(
+    name="NetworkPlugin", 
+    desc="GPT的联网插件", 
+    desire_priority=100, 
+    version="1.0",
+    author="haikerwang", )
+
+class NetworkPlugin(Plugin):
     def __init__(self):
         super().__init__()
+        
+        #文件路径
         curdir = os.path.dirname(__file__)
         config_path = os.path.join(curdir, "config.json")
         functions_path = os.path.join(curdir, "lib", "functions.json")
-        logger.info(f"[newgpt_turbo] current directory: {curdir}")
-        logger.info(f"加载配置文件: {config_path}")
+        
+        #容错
         if not os.path.exists(config_path):
             logger.info('[RP] 配置文件不存在，将使用config.json.template模板')
             config_path = os.path.join(curdir, "config.json.template")
-            logger.info(f"[newgpt_turbo] config template path: {config_path}")
+            logger.info(f"[NetworkPlugin] config template path: {config_path}")
+        
+        #加载配置文件
         try:
             with open(functions_path, 'r', encoding="utf-8") as f:
                 functions = json.load(f)
                 self.functions = functions
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
-                logger.debug(f"[newgpt_turbo] config content: {config}")
+                logger.debug(f"[NetworkPlugin] config content: {config}")
                 openai.api_key = conf().get("open_ai_api_key")
                 openai.api_base = conf().get("open_ai_api_base", "https://api.openai.com/v1")
                 self.alapi_key = config["alapi_key"]
@@ -73,24 +84,29 @@ class NewGpt(Plugin):
                 self.comapp = create_channel_object()
                 self.prompt = config["prompt"]
                 self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
-                logger.info("[newgpt_turbo] inited")
+                logger.info("[NetworkPlugin] inited")
         except Exception as e:
+            logger.error(f"初始化错误！ 错误信息：{e}")
+            #错误信息
             if isinstance(e, FileNotFoundError):
                 logger.warn(f"[RP] init failed, config.json not found.")
             else:
                 logger.warn("[RP] init failed." + str(e))
-            raise e
-
+            
+            
+    #处理消息
     def on_handle_context(self, e_context: EventContext):
+        #非Text，默认不处理
         if e_context["context"].type not in [ContextType.TEXT]:
             return
-
-        reply = Reply()  # 创建一个回复对象
-        reply.type = ReplyType.TEXT
+        
+        #解析内容
         context = e_context['context'].content[:]
-        logger.info("newgpt_turbo query=%s" % context)
+        logger.info("NetworkPlugin query=%s" % context)
+        
+        #获取聊天机器人（消息上下文）
         all_sessions = Bridge().get_bot("chat").sessions
-        session = all_sessions.session_query(context, e_context["context"]["session_id"], add_to_history=False)
+        session = all_sessions.session_query(context, e_context["context"]["session_id"])
         logger.debug("session.messages:%s" % session.messages)
         if len(session.messages) > 2:
             input_messages = session.messages[-2:]
@@ -98,215 +114,270 @@ class NewGpt(Plugin):
             input_messages = session.messages[-1:]
         input_messages.append({"role": "user", "content": context})
         logger.debug("input_messages:%s" % input_messages)
-        conversation_output = self.run_conversation(input_messages, e_context)
-        if conversation_output is not None:
-            _reply = conversation_output
-            logger.debug("conversation_output:%s" % conversation_output)
-            all_sessions.session_query(context, e_context["context"]["session_id"])
-            all_sessions.session_reply(_reply, e_context["context"]["session_id"])
-            reply.content = _reply
-            e_context["reply"] = reply
+        
+        #回复内容
+        reply_text = None
+        try:
+            #查询是否输入的内容的联网回复，若无命中，则为None
+            reply_text = self.run_conversation(input_messages, e_context)
+        except Exception as e:
+            print(f"联网插件查询网络功能时，发生异常，错误原因：{e}")
+            return        
+        
+        #回复
+        if reply_text is not None and len(reply_text) > 0:
+            #log
+            logger.info(f"网络插件查询到内容，准备回复，内容为：{reply_text}")
+            
+            #回复
+            msg: ChatMessage = e_context["context"]["msg"]
+            self.replay_use_custom(msg.other_user_id, reply_text,ReplyType.TEXT)
+            
+            #跳过原回复
             e_context.action = EventAction.BREAK_PASS
-            return
         else:
-            return
-
+            #默认回复
+            logger.info("联网插件未匹配功能模块，跳过处理")
+        
+    
+    #使用自定义回复
+    def replay_use_custom(self, receiver, reply_text: str, replyType: ReplyType, retry_cnt=0):
+        
+        try:    
+            if replyType == ReplyType.TEXT:
+                reply_text = reply_text.strip()
+                itchat.send(reply_text, toUserName=receiver)
+                
+            elif replyType == ReplyType.IMAGE_URL:
+                img_url = reply_text
+                pic_res = requests.get(img_url, stream=True)
+                image_storage = io.BytesIO()
+                for block in pic_res.iter_content(1024):
+                    image_storage.write(block)
+                image_storage.seek(0)
+                itchat.send_image(image_storage, toUserName=receiver)
+                
+        except Exception as e:
+            if retry_cnt < 2:
+                time.sleep(3 + 3 * retry_cnt)
+                self.replay_use_custom(receiver, reply_text, replyType, retry_cnt + 1)
+                
+                
+    #执行功能
     def run_conversation(self, input_messages, e_context: EventContext):
         global function_response
         content = e_context['context'].content[:]
-        messages = []
         logger.debug(f"User input: {input_messages}")  # 用户输入
+        #利用GPT的插件能力，查询符合要求的插件名称
         response = openai.ChatCompletion.create(
             model=self.functions_openai_model,
             messages=input_messages,
             functions=self.functions,
             function_call="auto",
         )
-
+        
+        #choices
         message = response["choices"][0]["message"]
-
-        # 检查模型是否希望调用函数
-        if message.get("function_call"):
-            function_name = message["function_call"]["name"]
-            logger.debug(f"Function call: {function_name}")  # 打印函数调用
-            logger.debug(f"message={message}")
-            # 处理各种可能的函数调用，执行函数并获取函数的返回结果
-            if function_name == "get_weather":
-                function_args = json.loads(message["function_call"].get("arguments", "{}"))
-                logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
-                function_response = fun.get_weather(appkey=self.app_key, sign=self.app_sign,
-                                                    cityNm=function_args.get("cityNm", "未指定地点"))
-                function_response = json.dumps(function_response, ensure_ascii=False)
-                logger.debug(f"Function response: {function_response}")  # 打印函数响应
-            elif function_name == "get_morning_news":
-                function_response = fun.get_morning_news(api_key=self.alapi_key)
-                logger.debug(f"Function response: {function_response}")  # 打印函数响应
-            elif function_name == "get_hotlist":
-                function_args_str = message["function_call"].get("arguments", "{}")
-                function_args = json.loads(function_args_str)  # 使用 json.loads 将字符串转换为字典
-                hotlist_type = function_args.get("type", "未指定类型")
-                function_response = fun.get_hotlist(api_key=self.alapi_key, type=hotlist_type)
-                function_response = json.dumps(function_response, ensure_ascii=False)
-                logger.debug(f"Function response: {function_response}")  # 打印函数响应
-            elif function_name == "search":
-                function_args_str = message["function_call"].get("arguments", "{}")
-                function_args = json.loads(function_args_str)  # 使用 json.loads 将字符串转换为字典
-                search_query = function_args.get("query", "未指定关键词")
-                search_count = function_args.get("count", 1)
-                if "必应" in content or "newbing" in content.lower():
-                    com_reply = Reply()
-                    com_reply.type = ReplyType.TEXT
-                    context = e_context['context']
-                    if context.kwargs.get('isgroup'):
-                        msg = context.kwargs.get('msg')  # 这是WechatMessage实例
-                        nickname = msg.actual_user_nickname  # 获取nickname
-                        com_reply.content = "@{name}\n☑️正在给您实时联网必应搜索\n⏳整理深度数据需要时间，请耐心等待...".format(
-                            name=nickname)
-                    else:
-                        com_reply.content = "☑️正在给您实时联网必应搜索\n⏳整理深度数据需要时间，请耐心等待..."
-                    if self.comapp is not None:
-                        self.comapp.send(com_reply, e_context['context'])
-                    function_response = fun.search_bing(subscription_key=self.bing_subscription_key, query=search_query,
-                                                        count=int(search_count))
-                    function_response = json.dumps(function_response, ensure_ascii=False)
-                    logger.debug(f"Function response: {function_response}")  # 打印函数响应
-                elif "谷歌" in content or "搜索" in content or "google" in content.lower():
-                    com_reply = Reply()
-                    com_reply.type = ReplyType.TEXT
-                    context = e_context['context']
-                    if context.kwargs.get('isgroup'):
-                        msg = context.kwargs.get('msg')  # 这是WechatMessage实例
-                        nickname = msg.actual_user_nickname  # 获取nickname
-                        com_reply.content = "@{name}\n☑️正在给您实时联网谷歌搜索\n⏳整理深度数据需要几分钟，请您耐心等待...".format(
-                            name=nickname)
-                    else:
-                        com_reply.content = "☑️正在给您实时联网谷歌搜索\n⏳整理深度数据需要几分钟，请您耐心等待..."
-                    if self.comapp is not None:
-                        self.comapp.send(com_reply, e_context['context'])
-                    function_response = google.search_google(search_terms=search_query, base_url=self.google_base_url,
-                                                             iterations=1, count=1,
-                                                             api_key=self.google_api_key, cx_id=self.google_cx_id,
-                                                             model=self.assistant_openai_model)
-                    logger.debug(f"google.search_google url: {self.google_base_url}")
-                    function_response = json.dumps(function_response, ensure_ascii=False)
-                    logger.debug(f"Function response: {function_response}")  # 打印函数响应
+        #功能名称
+        function_name = message.get("function_call").get("name")
+        if function_name is None:
+              return None
+        
+        #准备调用
+        logger.info(f"准备调用功能函数名称: {function_name}")
+        
+        # 天气
+        if function_name == "get_weather":
+            function_args = json.loads(message["function_call"].get("arguments", "{}"))
+            logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
+            function_response = fun.get_weather(appkey=self.app_key, sign=self.app_sign,
+                                                cityNm=function_args.get("cityNm", "未指定地点"))
+            function_response = json.dumps(function_response, ensure_ascii=False)
+        
+        #早报
+        elif function_name == "get_morning_news":
+            function_response = fun.get_morning_news(api_key=self.alapi_key)
+            
+        #热榜
+        elif function_name == "get_hotlist":
+            function_args_str = message["function_call"].get("arguments", "{}")
+            function_args = json.loads(function_args_str)  # 使用 json.loads 将字符串转换为字典
+            hotlist_type = function_args.get("type", "未指定类型")
+            function_response = fun.get_hotlist(api_key=self.alapi_key, type=hotlist_type)
+            function_response = json.dumps(function_response, ensure_ascii=False)
+        
+        #搜索   
+        elif function_name == "search":
+            function_args_str = message["function_call"].get("arguments", "{}")
+            function_args = json.loads(function_args_str)  # 使用 json.loads 将字符串转换为字典
+            search_query = function_args.get("query", "未指定关键词")
+            search_count = function_args.get("count", 1)
+            if "必应" in content or "newbing" in content.lower():
+                com_reply = Reply()
+                com_reply.type = ReplyType.TEXT
+                context = e_context['context']
+                if context.kwargs.get('isgroup'):
+                    msg = context.kwargs.get('msg')  # 这是WechatMessage实例
+                    nickname = msg.actual_user_nickname  # 获取nickname
+                    com_reply.content = "@{name}\n☑️正在给您实时联网必应搜索\n⏳整理深度数据需要时间，请耐心等待...".format(
+                        name=nickname)
                 else:
-                    return None
-            elif function_name == "get_oil_price":
-                function_response = fun.get_oil_price(api_key=self.alapi_key)
-                logger.debug(f"Function response: {function_response}")  # 打印函数响应
-            elif function_name == "get_Constellation_analysis":
-                function_args = json.loads(message["function_call"].get("arguments", "{}"))
-                logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
-
-                function_response = fun.get_Constellation_analysis(api_key=self.alapi_key,
-                                                                   star=function_args.get("star", "未指定星座"),
-                                                                   )
+                    com_reply.content = "☑️正在给您实时联网必应搜索\n⏳整理深度数据需要时间，请耐心等待..."
+                if self.comapp is not None:
+                    self.comapp.send(com_reply, e_context['context'])
+                function_response = fun.search_bing(subscription_key=self.bing_subscription_key, query=search_query,
+                                                    count=int(search_count))
                 function_response = json.dumps(function_response, ensure_ascii=False)
-                logger.debug(f"Function response: {function_response}")  # 打印函数响应
-            elif function_name == "music_search":
-                function_args = json.loads(message["function_call"].get("arguments", "{}"))
-                logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
-
-                function_response = fun.music_search(api_key=self.alapi_key,
-                                                     keyword=function_args.get("keyword", "未指定音乐"),
-                                                     )
-                function_response = json.dumps(function_response, ensure_ascii=False)
-                logger.debug(f"Function response: {function_response}")  # 打印函数响应
-            elif function_name == "get_datetime":
-                function_args = json.loads(message["function_call"].get("arguments", "{}"))
-                logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
-                city = function_args.get("city_en", "未指定城市")  # 如果没有指定城市，将默认查询北京
-                function_response = fun.get_datetime(appkey=self.app_key, sign=self.app_sign, city_en=city)
-                function_response = json.dumps(function_response, ensure_ascii=False)
-                logger.debug(f"Function response: {function_response}")  # 打印函数响应
-            elif function_name == "get_url":
-                function_args = json.loads(message["function_call"].get("arguments", "{}"))
-                logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
-                url = function_args.get("url", "未指定URL")
-                function_response = fun.get_url(url=url)
-                function_response = json.dumps(function_response, ensure_ascii=False)
-                logger.debug(f"Function response: {function_response}")  # 打印函数响应
-            elif function_name == "get_stock_info":
-                function_args = json.loads(message["function_call"].get("arguments", "{}"))
-                logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
-                stock_names = function_args.get("stock_names", "未指定股票信息")
-                function_response = stock.get_stock_info(stock_names=stock_names, appkey=self.app_key,
-                                                         sign=self.app_sign)
-                function_response = json.dumps(function_response, ensure_ascii=False)
-                logger.debug(f"Function response: {function_response}")  # 打印函数响应
-            elif function_name == "get_video_url":
-                function_args = json.loads(message["function_call"].get("arguments", "{}"))
-                logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
-                url = function_args.get("url", "无URL")
-                viedo_url = fun.get_video_url(api_key=self.alapi_key, target_url=url)
-                if viedo_url:
-                    logger.debug(f"viedo_url: {viedo_url}")
-                    reply = Reply()  # 创建一个回复对象
-                    reply.type = ReplyType.VIDEO_URL
-                    reply.content = viedo_url
-                    e_context["reply"] = reply
-                    e_context.action = EventAction.BREAK_PASS
-                    return
+            
+            elif "谷歌" in content or "搜索" in content or "google" in content.lower():
+                com_reply = Reply()
+                com_reply.type = ReplyType.TEXT
+                context = e_context['context']
+                if context.kwargs.get('isgroup'):
+                    msg = context.kwargs.get('msg')  # 这是WechatMessage实例
+                    nickname = msg.actual_user_nickname  # 获取nickname
+                    com_reply.content = "@{name}\n☑️正在给您实时联网谷歌搜索\n⏳整理深度数据需要几分钟，请您耐心等待...".format(
+                        name=nickname)
                 else:
-                    reply = Reply()  # 创建一个回复对象
-                    reply.type = ReplyType.TEXT
-                    reply.content = "抱歉，解析失败了·······"
-                    e_context["reply"] = reply
-                    e_context.action = EventAction.BREAK_PASS
-                    return
-            elif function_name == "search_bing_news":
-                function_args = json.loads(message["function_call"].get("arguments", "{}"))
-                logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
-                search_query = function_args.get("query", "未指定关键词")
-                search_count = function_args.get("count", 10)
-                function_response = fun.search_bing_news(count=search_count,
-                                                         subscription_key=self.bing_subscription_key,
-                                                         query=search_query, )
+                    com_reply.content = "☑️正在给您实时联网谷歌搜索\n⏳整理深度数据需要几分钟，请您耐心等待..."
+                if self.comapp is not None:
+                    self.comapp.send(com_reply, e_context['context'])
+                function_response = google.search_google(search_terms=search_query, base_url=self.google_base_url,
+                                                            iterations=1, count=1,
+                                                            api_key=self.google_api_key, cx_id=self.google_cx_id,
+                                                            model=self.assistant_openai_model)
+                logger.debug(f"google.search_google url: {self.google_base_url}")
                 function_response = json.dumps(function_response, ensure_ascii=False)
-                logger.debug(f"Function response: {function_response}")  # 打印函数响应
             else:
-                return
+                return None
+            
+        #油价
+        elif function_name == "get_oil_price":
+            function_response = fun.get_oil_price(api_key=self.alapi_key)
+        
+        #星座运势查询
+        elif function_name == "get_Constellation_analysis":
+            function_args = json.loads(message["function_call"].get("arguments", "{}"))
+            logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
 
-            msg: ChatMessage = e_context["context"]["msg"]
-            current_date = datetime.now().strftime("%Y年%m月%d日%H时%M分")
-            if e_context["context"]["isgroup"]:
-                prompt = self.prompt.format(time=current_date, bot_name=msg.to_user_nickname,
-                                            name=msg.actual_user_nickname, content=content,
-                                            function_response=function_response)
+            function_response = fun.get_Constellation_analysis(api_key=self.alapi_key,
+                                                                star=function_args.get("star", "未指定星座"),
+                                                                )
+            function_response = json.dumps(function_response, ensure_ascii=False)
+        
+        #音乐    
+        elif function_name == "music_search":
+            function_args = json.loads(message["function_call"].get("arguments", "{}"))
+            logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
+
+            function_response = fun.music_search(api_key=self.alapi_key,
+                                                 keyword=function_args.get("keyword", "未指定音乐"))
+            function_response = json.dumps(function_response, ensure_ascii=False)
+        
+        #时间    
+        elif function_name == "get_datetime":
+            function_args = json.loads(message["function_call"].get("arguments", "{}"))
+            logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
+            city = function_args.get("city_en", "未指定城市")  # 如果没有指定城市，将默认查询北京
+            function_response = fun.get_datetime(appkey=self.app_key, sign=self.app_sign, city_en=city)
+            function_response = json.dumps(function_response, ensure_ascii=False)
+            
+        #URL解析
+        elif function_name == "get_url":
+            function_args = json.loads(message["function_call"].get("arguments", "{}"))
+            logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
+            url = function_args.get("url", "未指定URL")
+            function_response = fun.get_url(url=url)
+            function_response = json.dumps(function_response, ensure_ascii=False)
+        
+        #股票    
+        elif function_name == "get_stock_info":
+            function_args = json.loads(message["function_call"].get("arguments", "{}"))
+            logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
+            stock_names = function_args.get("stock_names", "未指定股票信息")
+            function_response = stock.get_stock_info(stock_names=stock_names, appkey=self.app_key,
+                                                        sign=self.app_sign)
+            function_response = json.dumps(function_response, ensure_ascii=False)
+            
+        #视频URL    
+        elif function_name == "get_video_url":
+            function_args = json.loads(message["function_call"].get("arguments", "{}"))
+            logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
+            url = function_args.get("url", "无URL")
+            viedo_url = fun.get_video_url(api_key=self.alapi_key, target_url=url)
+            if viedo_url:
+                logger.debug(f"viedo_url: {viedo_url}")
+                reply = Reply()  # 创建一个回复对象
+                reply.type = ReplyType.VIDEO_URL
+                reply.content = viedo_url
+                e_context["reply"] = reply
+                e_context.action = EventAction.BREAK_PASS
+                return None
             else:
-                prompt = self.prompt.format(time=current_date, bot_name=msg.to_user_nickname,
-                                            name=msg.from_user_nickname, content=content,
-                                            function_response=function_response)
-            # 将函数的返回结果发送给第二个模型
-            logger.debug(f"prompt :" + prompt)
-            logger.debug("messages: %s", [{"role": "system", "content": prompt}])
-            second_response = openai.ChatCompletion.create(
-                model=self.assistant_openai_model,
-                messages=[
-                    {"role": "system", "content": prompt},
-                ],
-                temperature=float(self.temperature),
-                max_tokens=int(self.max_tokens)
-            )
-
-            logger.debug(f"Second response: {second_response['choices'][0]['message']['content']}")  # 打印第二次的响应
-            messages.append(second_response["choices"][0]["message"])
-            return second_response['choices'][0]['message']['content']
-
+                reply = Reply()  # 创建一个回复对象
+                reply.type = ReplyType.TEXT
+                reply.content = "抱歉，解析失败了·······"
+                e_context["reply"] = reply
+                e_context.action = EventAction.BREAK_PASS
+                return None
+        
+        #必应新闻
+        elif function_name == "search_bing_news":
+            function_args = json.loads(message["function_call"].get("arguments", "{}"))
+            logger.debug(f"Function arguments: {function_args}")  # 打印函数参数
+            search_query = function_args.get("query", "未指定关键词")
+            search_count = function_args.get("count", 10)
+            function_response = fun.search_bing_news(count=search_count,
+                                                        subscription_key=self.bing_subscription_key,
+                                                        query=search_query, )
+            function_response = json.dumps(function_response, ensure_ascii=False)
+            
         else:
-            # 如果模型不希望调用函数，直接打印其响应
-            logger.info("模型响应无函数调用，跳过处理")  # 打印模型的响应
-            return
+            return None
+        
+        #打印结果
+        logger.debug(f"Function response: {function_response}")  # 打印函数响应
+        
+        #处理结果
+        msg: ChatMessage = e_context["context"]["msg"]
+        current_date = datetime.now().strftime("%Y年%m月%d日%H时%M分")
+        if e_context["context"]["isgroup"]:
+            prompt = self.prompt.format(time=current_date, bot_name=msg.to_user_nickname,
+                                        name=msg.actual_user_nickname, content=content,
+                                        function_response=function_response)
+        else:
+            prompt = self.prompt.format(time=current_date, bot_name=msg.to_user_nickname,
+                                        name=msg.from_user_nickname, content=content,
+                                        function_response=function_response)
+        # log
+        logger.debug(f"prompt :" + prompt)
+        logger.debug("messages: %s", [{"role": "system", "content": prompt}])
+        
+        #总结内容
+        second_response = openai.ChatCompletion.create(
+            model=self.assistant_openai_model,
+            messages=[
+                {"role": "system", "content": prompt},
+            ],
+            temperature=float(self.temperature),
+            max_tokens=int(self.max_tokens)
+        )
+        
+        #内容体
+        result_content = second_response['choices'][0]['message']['content']
+        logger.debug(f"总结内容体: {result_content}")
+        return result_content
 
+    
+    #帮助说明
     def get_help_text(self, verbose=False, **kwargs):
         # 初始化帮助文本，说明利用 midjourney api 来画图
-        help_text = "\n🔥GPT函数调用，极速联网，语境如需联网且有功能支持，则会直接联网获取实时信息\n"
+        help_text = "\n📌 功能介绍：GPT联网插件，支持网络获取目标信息\n"
         # 如果不需要详细说明，则直接返回帮助文本
         if not verbose:
             return help_text
         # 否则，添加详细的使用方法到帮助文本中
-        help_text = "newgpt_turbo，极速联网无需特殊指令，前置识别\n🔎谷歌搜索、🔎新闻搜索\n🗞每日早报、☀全球天气\n⌚实时时间、⛽全国油价\n🌌星座运势、🎵音乐（网易云）\n🔥各类热榜信息、📹短视频解析等"
+        help_text = "NetworkPlugin，GPT联网插件，前置识别\n🔎谷歌搜索、🔎新闻搜索\n🗞每日早报、☀全球天气\n⌚实时时间、⛽全国油价\n🌌星座运势、🎵音乐（网易云）\n🔥各类热榜信息、📹短视频解析等"
         # 返回帮助文本
         return help_text
 
