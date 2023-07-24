@@ -69,20 +69,5 @@ session_manager.py改动代码如下图所示，改动原因是把函数处理�
 
 ![](https://github.com/chazzjimel/newgpt_turbo/blob/main/images/001.png)
 
-## 其他插件
-
-[`midjourney_turbo`](https://github.com/chazzjimel/midjourney_turbo)，可能是目前最完善的基于[`chatgpt-on-wechat`](https://github.com/zhayujie/chatgpt-on-wechat)的插件
 
 ![](https://github.com/chazzjimel/newgpt_turbo/blob/main/images/002.png)
-
-------
-
-
-
-**如果本插件好用，请给star，号被举报了，以后不会再提供开源插件，拜拜了您勒！**
-
-
-
-### **纯交流群，看不爽的别进**
-
-![](https://github.com/chazzjimel/newgpt_turbo/blob/main/images/0718.jpg)
