@@ -4,14 +4,6 @@
 
 ## 使用说明
 
-必要条件：将本项目下的bot文件夹替换掉项目主目录的bot文件夹的文件，注意是替换，不是删掉bot后重新拉入！
-
-session_manager.py改动代码如下图所示，改动原因是把函数处理前的问题和GPT汇总后的内容穿插到全局上下文，不加个判断会首次调取上下文的时候把用户的语句存入到上下文，再把结果存入的时候又会把用户的语句再次存入，所以会多导致多一条上下文！
-
-![](https://github.com/chazzjimel/newgpt_turbo/blob/main/images/070501.png)
-
-
-
 需要的配置项：
 
 在 [`AlAPI`](https://alapi.cn/)获取`API key`，在[`NOWAPI`](http://www.nowapi.com/)获取`API key`，Bing Search的Key（自行谷歌），谷歌搜索的api_key和cx_id
