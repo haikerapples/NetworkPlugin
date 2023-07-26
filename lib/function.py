@@ -5,14 +5,10 @@ import urllib.request
 import urllib.request
 import requests
 import random
-
+from common.log import logger
 from bs4 import BeautifulSoup
 from urllib.request import urlopen
 from urllib.parse import urlencode
-
-
-__author__ = 'chazzjimel/跃迁'
-__date__ = '2023.6.21'
 
 
 # 使用必应搜索API进行搜索并返回相关的网络搜索结果和新闻
@@ -45,8 +41,9 @@ def search_bing(query, subscription_key, count):
         # 返回解析后的结果
         return results
 
-    except Exception as ex:
-        raise ex
+    except Exception as e:
+        logger.error(f"search_bing失败，错误信息：{e}")
+        return None
 
 
 def get_morning_news(api_key):
@@ -61,15 +58,11 @@ def get_morning_news(api_key):
         if morning_news_info['code'] == 200:  # 验证请求是否成功
             return json.dumps(morning_news_info, ensure_ascii=False)
         else:
-            raise ValueError
-    except Exception:
-        error_msgs = [
-            "对不起，我们目前无法获取早报新闻信息",
-            "糟糕，早报新闻信息现在不可用",
-            "抱歉，获取早报新闻信息遇到了问题",
-            "哎呀，早报新闻信息似乎不在服务范围内",
-        ]
-        return random.choice(error_msgs)  # 随机选择一个错误消息返回
+            logger.error(f"get_morning_news失败，错误信息：{morning_news_info}")
+            return None
+    except Exception as e:
+        logger.error(f"get_morning_news失败，错误信息：{e}")
+        return None
 
 
 def get_hotlist(api_key, type):
@@ -114,15 +107,11 @@ def get_hotlist(api_key, type):
                 item.pop('link', None)
             return hotlist_info['data']  # 返回 'data' 部分
         else:
-            raise ValueError
-    except Exception:
-        error_msgs = [
-            "对不起，我们目前无法获取实时热榜信息",
-            "糟糕，实时热榜信息现在不可用",
-            "抱歉，获取实时热榜信息遇到了问题",
-            "哎呀，实时热榜信息似乎不在服务范围内",
-        ]
-        return random.choice(error_msgs)  # 随机选择一个错误消息返回
+            logger.error(f"get_hotlist失败，错误信息：{hotlist_info}")
+            return None
+    except Exception as e:
+        logger.error(f"get_hotlist失败，错误信息：{e}")
+        return None
 
 
 def get_current_weather(api_key, city):
@@ -137,15 +126,11 @@ def get_current_weather(api_key, city):
         if weather_info['code'] == 200:  # 验证请求是否成功
             return weather_info['data']  # 直接返回 'data' 部分
         else:
-            raise ValueError
-    except Exception:
-        error_msgs = [
-            "对不起，我们目前无法获取这个城市的天气信息",
-            "糟糕，该城市的天气信息现在不可用",
-            "抱歉，获取该城市的天气信息遇到了问题",
-            "哎呀，该城市的天气信息似乎不在服务范围内",
-        ]
-        return {"error": random.choice(error_msgs)}  # 随机选择一个错误消息返回
+            logger.error(f"get_current_weather失败，错误信息：{weather_info}")
+            return None
+    except Exception as e:
+        logger.error(f"get_current_weather失败，错误信息：{e}")
+        return None
 
 
 def get_oil_price(api_key):
@@ -160,15 +145,11 @@ def get_oil_price(api_key):
         if oil_price_info['code'] == 200:  # 验证请求是否成功
             return json.dumps(oil_price_info, ensure_ascii=False)
         else:
-            raise ValueError
-    except Exception:
-        error_msgs = [
-            "对不起，我们目前无法获取油价信息",
-            "糟糕，油价信息现在不可用",
-            "抱歉，获取油价信息遇到了问题",
-            "哎呀，油价信息似乎不在服务范围内",
-        ]
-        return random.choice(error_msgs)  # 随机选择一个错误消息返回
+            logger.error(f"get_oil_price失败，错误信息：{oil_price_info}")
+            return None
+    except Exception as e:
+        logger.error(f"get_oil_price失败，错误信息：{e}")
+        return None
 
 
 def get_Constellation_analysis(api_key, star):
@@ -206,15 +187,11 @@ def get_Constellation_analysis(api_key, star):
         if constellation_info['code'] == 200:  # 验证请求是否成功
             return json.dumps(constellation_info, ensure_ascii=False)
         else:
-            raise ValueError
-    except Exception:
-        error_msgs = [
-            "对不起，我们目前无法获取这个星座的运势信息",
-            "糟糕，该星座的运势信息现在不可用",
-            "抱歉，获取该星座的运势信息遇到了问题",
-            "哎呀，该星座的运势信息似乎不在服务范围内",
-        ]
-        return random.choice(error_msgs)  # 随机选择一个错误消息返回
+            logger.error(f"get_Constellation_analysis 失败，错误信息：{constellation_info}")
+            return None
+    except Exception as e:
+        logger.error(f"get_Constellation_analysis失败，错误信息：{e}")
+        return None
 
 
 
@@ -265,7 +242,8 @@ def music_search(api_key, keyword):
         search_info = search_response.json()
 
         if search_info['code'] != 200:  # 如果请求不成功，抛出异常
-            raise ValueError
+            logger.error(f"music_search失败，错误信息：{search_info}")
+            return None
 
         # 第二步：对每首歌曲获取其URL
         songs_info = search_info['data']['songs']
@@ -280,7 +258,7 @@ def music_search(api_key, keyword):
             if url_info['code'] == 200:
                 song['url'] = url_info['data']['url']  # 将URL添加到歌曲信息中
             else:
-                song['url'] = 'URL获取失败'
+                continue
 
             # 获取歌曲名称
             song_name = song['name']
@@ -298,17 +276,16 @@ def music_search(api_key, keyword):
                 "duration": duration,
                 "url": url,
             })
+            
+        if len(result) > 0:
+            return result
+        else:
+            logger.error(f"music_search失败")
+            return None
 
-        return result
-
-    except Exception:
-        error_msgs = [
-            "对不起，我们目前无法搜索到这首音乐",
-            "糟糕，该音乐搜索结果现在不可用",
-            "抱歉，搜索该音乐遇到了问题",
-            "哎呀，该音乐似乎不在服务范围内",
-        ]
-        return random.choice(error_msgs)  # 随机选择一个错误消息返回
+    except Exception as e:
+        logger.error(f"music_search失败，错误信息：{e}")
+        return None
 
 
 def get_short_link(api_key, url):
@@ -322,15 +299,11 @@ def get_short_link(api_key, url):
         if short_link_info['code'] == 200:  # 验证请求是否成功
             return json.dumps(short_link_info, ensure_ascii=False)
         else:
-            raise ValueError
-    except Exception:
-        error_msgs = [
-            "对不起，我们目前无法获取这个链接的短链接",
-            "糟糕，生成短链接现在不可用",
-            "抱歉，生成短链接遇到了问题",
-            "哎呀，该链接似乎无法生成短链接",
-        ]
-        return random.choice(error_msgs)  # 随机选择一个错误消息返回
+            logger.error(f"get_short_link失败，错误信息：{short_link_info}")
+            return None
+    except Exception as e:
+        logger.error(f"short_link_info失败，错误信息：{e}")
+        return None
 
 
 def get_datetime(appkey, sign, city_en):
@@ -358,15 +331,11 @@ def get_datetime(appkey, sign, city_en):
             else:
                 return a_result['msgid'] + ' ' + a_result['msg']
         else:
-            return 'Request nowapi fail.'
-    except Exception:
-        error_msgs = [
-            "对不起，我们目前无法获取该城市的时间信息",
-            "糟糕，获取时间信息现在不可用",
-            "抱歉，获取时间信息遇到了问题",
-            "哎呀，该城市的时间信息似乎无法获取",
-        ]
-        return random.choice(error_msgs)  # 随机选择一个错误消息返回
+            logger.error(f"get_datetime失败，错误信息：{a_result}")
+            return None
+    except Exception as e:
+        logger.error(f"get_datetime失败，错误信息：{e}")
+        return None
 
 
 # 获取指定URL的内容，并返回一个字符串
@@ -401,15 +370,9 @@ def get_url(url):
 
         return full_text
 
-    except Exception:
-        # 如果发生异常，返回一个随机的错误消息
-        error_msgs = [
-            "对不起，我们无法访问你提供的URL",
-            "糟糕，获取网页信息现在不可用",
-            "抱歉，访问网页遇到了问题",
-            "哎呀，你提供的URL似乎无法获取"
-        ]
-        return random.choice(error_msgs)  # 随机选择一个错误消息返回
+    except Exception as e:
+        logger.error(f"get_url失败，错误信息：{e}")
+        return None
 
 
 # 实现全球大部分天气和各种指数的函数
@@ -442,17 +405,11 @@ def get_weather(cityNm, appkey, sign):
                 # 如果请求失败，返回错误消息
                 return a_result['msgid'] + ' ' + a_result['msg']
         else:
-            # 如果请求失败，返回错误消息
-            return 'Request nowapi fail.'
-    except Exception:
-        # 如果发生异常，返回一个随机的错误消息
-        error_msgs = [
-            "对不起，我们无法获取 {} 的天气信息".format(cityNm),
-            "获取 {} 的天气信息现在不可用".format(cityNm),
-            "获取 {} 的天气信息遇到了问题".format(cityNm),
-            "无法获取 {} 的天气信息".format(cityNm)
-        ]
-        return random.choice(error_msgs)  # 随机选择一个错误消息返回
+            logger.error(f"get_weather失败，错误信息：{a_result}")
+            return None
+    except Exception as e:
+        logger.error(f"get_weather失败，错误信息：{e}")
+        return None
 
 
 
@@ -475,14 +432,8 @@ def search_bing_news(count, subscription_key, query):
         # 获取并返回响应数据
         data = response.json()
         return data
-    except Exception:
-        # 如果发生异常，返回一个随机的错误消息
-        error_msgs = [
-            "对不起，我们无法获取新闻",
-            "糟糕，获取新闻现在不可用",
-            "抱歉，新闻搜索遇到了问题",
-            "哎呀，获取新闻似乎出了些问题"
-        ]
-        return {"error": random.choice(error_msgs)}  # 随机选择一个错误消息返回
+    except Exception as e:
+        logger.error(f"search_bing_news失败，错误信息：{e}")
+        return None
 
 

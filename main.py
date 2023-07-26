@@ -6,7 +6,7 @@ import plugins
 import os
 import requests
 import io
-from bridge.context import ContextType
+from bridge.context import ContextType, Context
 from bridge.reply import Reply, ReplyType
 from channel.chat_message import ChatMessage
 from channel.wechat.wechat_channel import WechatChannel
@@ -19,7 +19,9 @@ from common.log import logger
 from plugins.NetworkPlugin.lib import function as fun, get_stock_info as stock, search_google as google
 from datetime import datetime
 from bridge.bridge import Bridge
-from lib import itchat
+import config as RobotConfig
+import gc
+from channel import channel_factory
 
 
 def create_channel_object():
@@ -130,8 +132,8 @@ class NetworkPlugin(Plugin):
             logger.info(f"网络插件查询到内容，准备回复，内容为：{reply_text}")
             
             #回复
-            msg: ChatMessage = e_context["context"]["msg"]
-            self.replay_use_custom(msg.other_user_id, reply_text,ReplyType.TEXT)
+            context = e_context["context"]
+            self.replay_use_custom(reply_text, ReplyType.TEXT, context)
             
             #跳过原回复
             e_context.action = EventAction.BREAK_PASS
@@ -139,33 +141,31 @@ class NetworkPlugin(Plugin):
             #默认回复
             logger.info("联网插件未匹配功能模块，跳过处理")
         
-    
-    #使用自定义回复
-    def replay_use_custom(self, receiver, reply_text: str, replyType: ReplyType, retry_cnt=0):
         
-        try:    
-            if replyType == ReplyType.TEXT:
-                reply_text = reply_text.strip()
-                itchat.send(reply_text, toUserName=receiver)
+    #使用自定义回复
+    def replay_use_custom(self, reply_text: str, replyType: ReplyType, context :Context, retry_cnt=0):
                 
-            elif replyType == ReplyType.IMAGE_URL:
-                img_url = reply_text
-                pic_res = requests.get(img_url, stream=True)
-                image_storage = io.BytesIO()
-                for block in pic_res.iter_content(1024):
-                    image_storage.write(block)
-                image_storage.seek(0)
-                itchat.send_image(image_storage, toUserName=receiver)
+        try:    
+            reply = Reply()
+            reply.type = replyType
+            reply.content = reply_text
+            channel_name = RobotConfig.conf().get("channel_type", "wx")
+            channel = channel_factory.create_channel(channel_name)
+            channel.send(reply, context)
+            
+            #释放
+            channel = None
+            gc.collect()    
                 
         except Exception as e:
             if retry_cnt < 2:
                 time.sleep(3 + 3 * retry_cnt)
-                self.replay_use_custom(receiver, reply_text, replyType, retry_cnt + 1)
+                self.replay_use_custom(reply_text, replyType, context,retry_cnt + 1)
                 
                 
     #执行功能
     def run_conversation(self, input_messages, e_context: EventContext):
-        global function_response
+        function_response = None
         content = e_context['context'].content[:]
         logger.debug(f"User input: {input_messages}")  # 用户输入
         #利用GPT的插件能力，查询符合要求的插件名称
@@ -307,19 +307,11 @@ class NetworkPlugin(Plugin):
             viedo_url = fun.get_video_url(api_key=self.alapi_key, target_url=url)
             if viedo_url:
                 logger.debug(f"viedo_url: {viedo_url}")
-                reply = Reply()  # 创建一个回复对象
-                reply.type = ReplyType.VIDEO_URL
-                reply.content = viedo_url
-                e_context["reply"] = reply
-                e_context.action = EventAction.BREAK_PASS
+                #回复
+                self.replay_use_custom(viedo_url, ReplyType.VIDEO_URL, e_context["context"])
                 return None
             else:
-                reply = Reply()  # 创建一个回复对象
-                reply.type = ReplyType.TEXT
-                reply.content = "抱歉，解析失败了·······"
-                e_context["reply"] = reply
-                e_context.action = EventAction.BREAK_PASS
-                return None
+                function_response = None
         
         #必应新闻
         elif function_name == "search_bing_news":
@@ -333,10 +325,16 @@ class NetworkPlugin(Plugin):
             function_response = json.dumps(function_response, ensure_ascii=False)
             
         else:
-            return None
-        
+            function_response = None
+            logger.info("未命中联网插件的功能")
+            
         #打印结果
-        logger.debug(f"Function response: {function_response}")  # 打印函数响应
+        #logger.info(f"联网插件 - 查询的结果response: {function_response}")  
+        
+        #未命中，直接跳过
+        if function_response is None or function_response.lower() == "null":
+            logger.info("未命中联网插件的功能")
+            return None
         
         #处理结果
         msg: ChatMessage = e_context["context"]["msg"]
