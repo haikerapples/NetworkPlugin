@@ -123,7 +123,7 @@ class NetworkPlugin(Plugin):
             #查询是否输入的内容的联网回复，若无命中，则为None
             reply_text = self.run_conversation(input_messages, e_context)
         except Exception as e:
-            print(f"联网插件查询网络功能时，发生异常，错误原因：{e}")
+            print(f"联网插件查询网络功能时，发生异常，错误原因：{e}，跳过处理")
             return        
         
         #回复
