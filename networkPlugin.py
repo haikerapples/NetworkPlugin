@@ -201,9 +201,11 @@ class NetworkPlugin(Plugin):
                                                 cityNm=function_args.get("cityNm", "未指定地点"))
             function_response = json.dumps(function_response, ensure_ascii=False)
         
-        #早报
-        elif function_name == "get_morning_news":
-            function_response = fun.get_morning_news(api_key=self.alapi_key)
+        #alapi平台的功能：https://admin.alapi.cn/account/center
+        # 早报、油价、笑话
+        elif function_name == "get_morning_news" or function_name == "get_oil_price" or function_name == "get_random_joke":
+            function_sel = globals()[function_name]
+            function_response = function_sel(self.alapi_key)
             
         #热榜
         elif function_name == "get_hotlist":
@@ -257,10 +259,6 @@ class NetworkPlugin(Plugin):
                 function_response = json.dumps(function_response, ensure_ascii=False)
             else:
                 function_response = None
-            
-        #油价
-        elif function_name == "get_oil_price":
-            function_response = fun.get_oil_price(api_key=self.alapi_key)
         
         #星座运势查询
         elif function_name == "get_Constellation_analysis":

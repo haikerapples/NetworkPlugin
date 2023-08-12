@@ -64,6 +64,24 @@ def get_morning_news(api_key):
         logger.error(f"get_morning_news失败，错误信息：{e}")
         return None
 
+#随机笑话    
+def get_random_joke(api_key):
+    url = "https://v2.alapi.cn/api/joke/random"
+    payload = f"token={api_key}&format=json"
+    headers = {'Content-Type': "application/x-www-form-urlencoded"}
+
+    try:
+        response = requests.request("POST", url, data=payload, headers=headers)
+        result = response.json()
+        if result['code'] == 200:  # 验证请求是否成功
+            return json.dumps(result, ensure_ascii=False)
+        else:
+            logger.error(f"get_random_joke失败，错误信息：{result}")
+            return None
+    except Exception as e:
+        logger.error(f"get_random_joke 失败，错误信息：{e}")
+        return None
+
 
 def get_hotlist(api_key, type):
     """获取热榜信息的实现代码，但不返回链接信息"""
