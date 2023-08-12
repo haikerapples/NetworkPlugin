@@ -204,7 +204,7 @@ class NetworkPlugin(Plugin):
         #alapi平台的功能：https://admin.alapi.cn/account/center
         # 早报、油价、笑话
         elif function_name == "get_morning_news" or function_name == "get_oil_price" or function_name == "get_random_joke":
-            function_sel = globals()[function_name]
+            function_sel = getattr(fun, function_name)
             function_response = function_sel(self.alapi_key)
             
         #热榜
