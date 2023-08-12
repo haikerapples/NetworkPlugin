@@ -119,24 +119,24 @@ class NetworkPlugin(Plugin):
         
         #回复内容
         reply_text = None
+        replyType = None
         try:
             #查询是否输入的内容的联网回复，若无命中，则为None
-            reply_text = self.run_conversation(input_messages, e_context)
+            tpm_reply_text, tmp_replyType = self.run_conversation(input_messages, e_context)
+            reply_text = tpm_reply_text
+            replyType = tmp_replyType
         except Exception as e:
             logger.error(f"联网插件查询网络功能时，发生异常，错误原因：{e}，跳过处理")
             return        
         
         #回复
-        if reply_text is not None and len(reply_text) > 0:
+        if reply_text is not None and len(reply_text) > 0 and replyType is not None:
             #log
             logger.info(f"网络插件查询到内容，准备回复，内容为：{reply_text}")
             
             #回复
             context = e_context["context"]
-            self.replay_use_custom(reply_text, ReplyType.TEXT, context, e_context)
-            
-            #跳过原回复
-            e_context.action = EventAction.BREAK_PASS
+            self.replay_use_custom(reply_text, replyType, context, e_context)
         else:
             #默认回复
             logger.info("联网插件未匹配功能模块，跳过处理")
@@ -149,16 +149,18 @@ class NetworkPlugin(Plugin):
             reply = Reply()
             reply.type = replyType
             reply.content = reply_text
-            channel = e_context["channel"]
-            if channel is None:
-                channel_name = RobotConfig.conf().get("channel_type", "wx")
-                channel = channel_factory.create_channel(channel_name)
-                channel.send(reply, context)
-                #释放
-                channel = None
-                gc.collect() 
-            else:
-                channel.send(reply, context)     
+            e_context["reply"] = reply
+            e_context.action = EventAction.BREAK_PASS
+            # channel = e_context["channel"]
+            # if channel is None:
+            #     channel_name = RobotConfig.conf().get("channel_type", "wx")
+            #     channel = channel_factory.create_channel(channel_name)
+            #     channel.send(reply, context)
+            #     #释放
+            #     channel = None
+            #     gc.collect() 
+            # else:
+            #     channel.send(reply, context)     
                 
         except Exception as e:
             if retry_cnt < 2:
@@ -168,9 +170,8 @@ class NetworkPlugin(Plugin):
                 
     #执行功能
     def run_conversation(self, input_messages, e_context: EventContext):
-        function_response = None
         content = e_context['context'].content[:]
-        logger.debug(f"User input: {input_messages}")  # 用户输入
+        logger.debug(f"用户输入: {input_messages}, 利用GPT匹配功能中...")  # 用户输入
         #利用GPT的插件能力，查询符合要求的插件名称
         response = openai.ChatCompletion.create(
             model=self.functions_openai_model,
@@ -184,11 +185,14 @@ class NetworkPlugin(Plugin):
         #功能名称
         function_name = message.get("function_call").get("name")
         if function_name is None:
-              return None
+              return None, None
         
         #准备调用
-        logger.info(f"准备调用功能函数名称: {function_name}")
+        logger.info(f"匹配到已支持的功能，准备调用😄~；功能函数名称: {function_name}")
         
+        #功能
+        function_response = None
+        function_responseType = ReplyType.TEXT
         # 天气
         if function_name == "get_weather":
             function_args = json.loads(message["function_call"].get("arguments", "{}"))
@@ -252,7 +256,7 @@ class NetworkPlugin(Plugin):
                 logger.debug(f"google.search_google url: {self.google_base_url}")
                 function_response = json.dumps(function_response, ensure_ascii=False)
             else:
-                return None
+                function_response = None
             
         #油价
         elif function_name == "get_oil_price":
@@ -310,9 +314,8 @@ class NetworkPlugin(Plugin):
             viedo_url = fun.get_video_url(api_key=self.alapi_key, target_url=url)
             if viedo_url:
                 logger.debug(f"viedo_url: {viedo_url}")
-                #回复
-                self.replay_use_custom(viedo_url, ReplyType.VIDEO_URL, e_context["context"])
-                return None
+                function_response = viedo_url
+                function_responseType = ReplyType.VIDEO_URL
             else:
                 function_response = None
         
@@ -337,9 +340,13 @@ class NetworkPlugin(Plugin):
         #未命中，直接跳过
         if function_response is None or function_response.lower() == "null":
             logger.info("未命中联网插件的功能")
-            return None
+            return None, None
         
-        #处理结果
+        # 非文本类型
+        elif function_responseType is not ReplyType.TEXT:
+            return function_response, function_responseType
+            
+        #处理文本 - 总结结果
         msg: ChatMessage = e_context["context"]["msg"]
         current_date = datetime.now().strftime("%Y年%m月%d日%H时%M分")
         if e_context["context"]["isgroup"]:
@@ -351,8 +358,8 @@ class NetworkPlugin(Plugin):
                                         name=msg.from_user_nickname, content=content,
                                         function_response=function_response)
         # log
-        logger.debug(f"prompt :" + prompt)
-        logger.debug("messages: %s", [{"role": "system", "content": prompt}])
+        logger.debug(f"总结话术 prompt :" + prompt)
+        logger.debug("总结话术，请求 messages: %s", [{"role": "system", "content": prompt}])
         
         #总结内容
         second_response = openai.ChatCompletion.create(
@@ -367,7 +374,7 @@ class NetworkPlugin(Plugin):
         #内容体
         result_content = second_response['choices'][0]['message']['content']
         logger.debug(f"总结内容体: {result_content}")
-        return result_content
+        return result_content, function_responseType
 
     
     #帮助说明
