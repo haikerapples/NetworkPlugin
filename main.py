@@ -123,7 +123,7 @@ class NetworkPlugin(Plugin):
             #查询是否输入的内容的联网回复，若无命中，则为None
             reply_text = self.run_conversation(input_messages, e_context)
         except Exception as e:
-            print(f"联网插件查询网络功能时，发生异常，错误原因：{e}，跳过处理")
+            logger.error(f"联网插件查询网络功能时，发生异常，错误原因：{e}，跳过处理")
             return        
         
         #回复
@@ -133,7 +133,7 @@ class NetworkPlugin(Plugin):
             
             #回复
             context = e_context["context"]
-            self.replay_use_custom(reply_text, ReplyType.TEXT, context)
+            self.replay_use_custom(reply_text, ReplyType.TEXT, context, e_context)
             
             #跳过原回复
             e_context.action = EventAction.BREAK_PASS
@@ -143,24 +143,27 @@ class NetworkPlugin(Plugin):
         
         
     #使用自定义回复
-    def replay_use_custom(self, reply_text: str, replyType: ReplyType, context :Context, retry_cnt=0):
+    def replay_use_custom(self, reply_text: str, replyType: ReplyType, context :Context, e_context: EventContext, retry_cnt=0):
                 
         try:    
             reply = Reply()
             reply.type = replyType
             reply.content = reply_text
-            channel_name = RobotConfig.conf().get("channel_type", "wx")
-            channel = channel_factory.create_channel(channel_name)
-            channel.send(reply, context)
-            
-            #释放
-            channel = None
-            gc.collect()    
+            channel = e_context["channel"]
+            if channel is None:
+                channel_name = RobotConfig.conf().get("channel_type", "wx")
+                channel = channel_factory.create_channel(channel_name)
+                channel.send(reply, context)
+                #释放
+                channel = None
+                gc.collect() 
+            else:
+                channel.send(reply, context)     
                 
         except Exception as e:
             if retry_cnt < 2:
                 time.sleep(3 + 3 * retry_cnt)
-                self.replay_use_custom(reply_text, replyType, context,retry_cnt + 1)
+                self.replay_use_custom(reply_text, replyType, context, e_context, retry_cnt + 1)
                 
                 
     #执行功能
